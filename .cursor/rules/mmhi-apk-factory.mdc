@@ -1,0 +1,22 @@
+---
+description: MMHI APK Factory: auditar funciones, generar APK Release independiente y probarla
+globs:
+  - "**/app.json"
+  - "**/app.config.*"
+  - "**/package.json"
+  - "**/AndroidManifest.xml"
+  - "**/build.gradle*"
+  - "**/*.kt"
+  - "**/*.tsx"
+alwaysApply: true
+---
+# MMHI APK Factory - norma de Cursor
+Antes de generar cualquier APK:
+1. Inspecciona TODO el proyecto de forma recursiva; enumera pantallas, permisos, camara, OCR, Excel, datos locales, navegacion, red y flujos principales.
+2. Escribe/actualiza `mmhi-functions.json` en la raiz del proyecto. Declara `required_features` con los ID conocidos (`camera`, `ocr`, `excel`, `storage`, `sharing`, `location`, `microphone`) y deja por escrito las pruebas de aceptacion.
+3. No elimines funciones existentes al convertir el proyecto a Android. Compara las rutas de origen con las pantallas y permisos Android.
+4. JAMAS entregues `assembleDebug`, un Expo Development Build ni una APK que pida URL de Metro. Elimina dependencia `expo-dev-client` del perfil standalone; usa `assembleRelease` o EAS `developmentClient:false`, `android.buildType:apk`.
+5. Comprueba APK: paquete correcto, firma validada, no-debuggable, `assets/index.android.bundle` en Expo, hash SHA256, tamaño y fecha.
+6. Ejecuta pruebas de funciones en emulador o dispositivo. Si no tienes Android fisico, marca esa comprobacion como pendiente y no declares que la app esta totalmente funcional.
+7. Publica SOLO la version standalone probada, con URL de descarga y registro de incidencias; nunca sustituyas el enlace de una APK valida por una version de desarrollo.
+8. La compilacion automatica de MMHI esta en `IsraelConti/MMHI-APK-Factory/.github/workflows/build-apk.yml`, reutilizable en el workflow del repositorio del proyecto.
