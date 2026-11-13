@@ -1,0 +1,19 @@
+{
+  "app": "MMHI Albaranes OCR",
+  "required_features": [
+    "camera",
+    "ocr",
+    "excel",
+    "storage",
+    "sharing"
+  ],
+  "acceptance_scenarios": [
+    "La aplicacion abre sin URL ni servidor Metro",
+    "La camara permite fotografiar un albaran real y autorizar permisos",
+    "OCR identifica vendedor, comprador, fechas, importes e impuestos",
+    "Se pueden corregir manualmente datos antes de guardar",
+    "Exportar a Excel genera columnas consistentes",
+    "Reabrir una captura guardada funciona sin conexion"
+  ],
+  "notes": "Sustituir este ejemplo por la lista REAL de funciones de cada proyecto. El inventario estatico no sustituye pruebas reales."
+}
