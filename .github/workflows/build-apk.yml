@@ -1,0 +1,135 @@
+name: MMHI APK Factory - Android autonoma
+on:
+  workflow_call:
+    inputs:
+      project_dir:
+        type: string
+        required: false
+        default: "."
+  workflow_dispatch:
+    inputs:
+      project_dir:
+        description: "Carpeta del proyecto Android/Expo"
+        type: string
+        required: false
+        default: "."
+permissions:
+  contents: read
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      PROJECT_DIR: ${{ inputs.project_dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: android-actions/setup-android@v3
+      - name: Inventario y contrato de funciones
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os,json,re,sys
+          from pathlib import Path
+          p=Path(os.environ["PROJECT_DIR"]).resolve()
+          if not p.is_dir(): sys.exit("ERROR: no existe carpeta "+str(p))
+          pkg=json.loads((p/"package.json").read_text()) if (p/"package.json").is_file() else {}
+          deps={**pkg.get("dependencies",{}),**pkg.get("devDependencies",{})}
+          expo="expo" in deps
+          android=(p/"android"/"app").is_dir() or (p/"app").is_dir()
+          if not expo and not android:
+              sys.exit("ERROR: se ha recibido una web sin proyecto Android. En Google AI Studio elige Android/Kotlin o convierte y prueba una capa nativa antes de compilar.")
+          patterns={
+            "camera":r"expo-camera|CameraView|CameraX|android.permission.CAMERA|TakePicture",
+            "ocr":r"mlkit|TextRecognizer|tesseract|ocr|textrecognition",
+            "excel":r"xlsx|excel|spreadsheet|sheetjs",
+            "storage":r"sqlite|roomdatabase|asyncstorage|firestore|realm",
+            "sharing":r"expo-sharing|ACTION_SEND|FileProvider|shareAsync",
+            "location":r"expo-location|ACCESS_FINE_LOCATION|FusedLocation",
+            "microphone":r"RECORD_AUDIO|expo-av|expo-audio"
+          }
+          hit={k:[] for k in patterns}
+          files=0
+          for f in p.rglob("*"):
+              if not f.is_file() or any(x in {".git","node_modules",".gradle","build","dist",".expo"} for x in f.relative_to(p).parts):continue
+              if f.suffix.lower() not in {".ts",".tsx",".jsx",".js",".java",".kt",".json",".xml"} or f.stat().st_size>500000:continue
+              files+=1
+              content=f.read_text(encoding="utf8",errors="ignore")
+              for key,pat in patterns.items():
+                  if re.search(pat,content,re.I):hit[key].append(str(f.relative_to(p)))
+          spec=p/"mmhi-functions.json"
+          required=json.loads(spec.read_text()).get("required_features",[]) if spec.is_file() else []
+          unknown=[x for x in required if x not in hit]
+          missing=[x for x in required if x in hit and not hit[x]]
+          result={"project":str(p),"expo":expo,"files":files,"required":required,"detected":hit,"missing":missing,"unknown":unknown}
+          Path("mmhi-functions-report.json").write_text(json.dumps(result,indent=2,ensure_ascii=False))
+          print(json.dumps(result,indent=2,ensure_ascii=False))
+          if unknown or missing:sys.exit("ERROR: contrato de funciones incumplido")
+          if expo and "expo-dev-client" in deps:sys.exit("ERROR: quitar expo-dev-client del proyecto para construir APK autonoma sin pantalla URL.")
+          PY
+      - name: Compilar RELEASE
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          if [ -f package.json ]; then
+            if [ -f pnpm-lock.yaml ]; then corepack enable; corepack pnpm install --frozen-lockfile
+            elif [ -f yarn.lock ]; then corepack enable; yarn install --frozen-lockfile
+            elif [ -f package-lock.json ]; then npm ci
+            else npm install; fi
+          fi
+          if [ -f package.json ] && node -e "process.exit(require('./package.json').dependencies?.expo ? 0 : 1)"; then
+            CI=1 npx expo prebuild --platform android --non-interactive
+          fi
+          if [ -f android/gradlew ]; then cd android; fi
+          if [ ! -f gradlew ]; then echo "ERROR: falta gradlew en proyecto Android"; exit 1; fi
+          chmod +x gradlew
+          CI=1 NODE_ENV=production ./gradlew :app:assembleRelease --no-daemon --stacktrace
+      - name: Firma de prueba y validacion
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find "$PROJECT_DIR" -path "*/app/build/outputs/apk/release/*.apk" -type f ! -name "*debug*" | head -n1)
+          if [ -z "$APK" ]; then echo "ERROR: no hay APK Release"; exit 1; fi
+          TOOLS=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1 | xargs dirname)
+          if "$TOOLS/apksigner" verify "$APK" >/dev/null 2>&1; then cp "$APK" mmhi-release.apk
+          else
+            keytool -genkeypair -alias mmhitest -keyalg RSA -keysize 3072 -validity 365 -dname "CN=MMHI APK TEST" -storepass changeit -keypass changeit -keystore /tmp/mmhi-test.jks -noprompt
+            "$TOOLS/zipalign" -f -p 4 "$APK" /tmp/mmhi-aligned.apk
+            "$TOOLS/apksigner" sign --ks /tmp/mmhi-test.jks --ks-pass pass:changeit --key-pass pass:changeit --ks-key-alias mmhitest --out mmhi-release.apk /tmp/mmhi-aligned.apk
+          fi
+          "$TOOLS/apksigner" verify --verbose mmhi-release.apk
+          "$TOOLS/aapt" dump badging mmhi-release.apk | head -n 15
+          python3 - <<'PY'
+          import os,zipfile,hashlib,json
+          from pathlib import Path
+          a=Path("mmhi-release.apk")
+          with zipfile.ZipFile(a) as z:
+            bad=z.testzip()
+            if bad:raise RuntimeError("ZIP corrupto: "+bad)
+            files=set(z.namelist())
+            detected=json.loads(Path("mmhi-functions-report.json").read_text())
+            if detected["expo"] and "assets/index.android.bundle" not in files:
+              raise RuntimeError("Expo APK sin JS bundle embebido. No distribuir: puede solicitar URL de Metro.")
+          digest=hashlib.sha256(a.read_bytes()).hexdigest()
+          data={"status":"RELEASE_GENERATED","bytes":a.stat().st_size,"sha256":digest,"checks":["valid_zip","verified_apk_signature","expo_embedded_bundle_if_applicable"],"limitations":"No sustituye pruebas de camara/OCR en un Android real; firma temporal de pruebas si no habia firma en el proyecto."}
+          Path("mmhi-validation.json").write_text(json.dumps(data,indent=2))
+          print(json.dumps(data,indent=2))
+          PY
+      - name: Entregar APK y diagnósticos descargables
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MMHI-APK-${{ github.run_number }}
+          path: |
+            mmhi-release.apk
+            mmhi-functions-report.json
+            mmhi-validation.json
+          if-no-files-found: warn
+          retention-days: 30
